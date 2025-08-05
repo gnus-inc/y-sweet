@@ -33,8 +33,8 @@ use tracing::{error, info, span, warn, Instrument, Level};
 use url::Url;
 use y_sweet_core::{
     api_types::{
-        validate_doc_name, AuthDocRequest, Authorization, ClientToken, ContentUploadRequest,
-        ContentUploadResponse, DocCreationRequest, NewDocResponse, AssetUrl, AssetsResponse,
+        validate_doc_name, AssetUrl, AssetsResponse, AuthDocRequest, Authorization, ClientToken,
+        ContentUploadRequest, ContentUploadResponse, DocCreationRequest, NewDocResponse,
     },
     auth::{Authenticator, ExpirationTimeEpochMillis, DEFAULT_EXPIRATION_SECONDS},
     doc_connection::DocConnection,
@@ -425,14 +425,8 @@ impl Server {
             .route("/doc/:doc_id/update", post(update_doc_deprecated))
             .route("/d/:doc_id/as-update", get(get_doc_as_update))
             .route("/d/:doc_id/update", post(update_doc))
-            .route(
-                "/d/:doc_id/assets",
-                post(generate_upload_presigned_url),
-            )
-            .route(
-                "/d/:doc_id/assets",
-                get(get_doc_assets),
-            )
+            .route("/d/:doc_id/assets", post(generate_upload_presigned_url))
+            .route("/d/:doc_id/assets", get(get_doc_assets))
             .route(
                 "/d/:doc_id/ws/:doc_id2",
                 get(handle_socket_upgrade_full_path),
@@ -446,14 +440,8 @@ impl Server {
             .route("/ws/:doc_id", get(handle_socket_upgrade_single))
             .route("/as-update", get(get_doc_as_update_single))
             .route("/update", post(update_doc_single))
-            .route(
-                "/assets",
-                post(generate_upload_presigned_url_single),
-            )
-            .route(
-                "/assets",
-                get(get_doc_assets_single),
-            )
+            .route("/assets", post(generate_upload_presigned_url_single))
+            .route("/assets", get(get_doc_assets_single))
             .layer(middleware::from_fn(Self::logging_middleware))
             .with_state(self.clone())
     }
@@ -1029,15 +1017,12 @@ async fn get_doc_assets(
     let assets = if let Some(store) = &server_state.store {
         // List assets in the assets directory
         let assets_prefix = format!("{}/assets/", doc_id);
-        let asset_names = store
-            .list_objects(&assets_prefix)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    anyhow!("Failed to list assets: {:?}", e),
-                )
-            })?;
+        let asset_names = store.list_objects(&assets_prefix).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                anyhow!("Failed to list assets: {:?}", e),
+            )
+        })?;
 
         // Generate signed URLs for each asset
         let mut asset_urls = Vec::new();
@@ -1045,15 +1030,20 @@ async fn get_doc_assets(
             // Extract asset_id from filename (remove extension)
             if let Some(asset_id) = extract_asset_id_from_filename(&filename) {
                 let key = format!("{}/assets/{}", doc_id, filename);
-                let download_url = store
-                    .generate_download_presigned_url(&key)
-                    .await
-                    .map_err(|e| {
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            anyhow!("Failed to generate download URL for {}: {:?}", filename, e),
-                        )
-                    })?;
+                let download_url =
+                    store
+                        .generate_download_presigned_url(&key)
+                        .await
+                        .map_err(|e| {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                anyhow!(
+                                    "Failed to generate download URL for {}: {:?}",
+                                    filename,
+                                    e
+                                ),
+                            )
+                        })?;
 
                 asset_urls.push(AssetUrl {
                     asset_id,
@@ -1084,15 +1074,12 @@ async fn get_doc_assets_single(
     let assets = if let Some(store) = &server_state.store {
         // List assets in the assets directory
         let assets_prefix = format!("{}/assets/", doc_id);
-        let asset_names = store
-            .list_objects(&assets_prefix)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    anyhow!("Failed to list assets: {:?}", e),
-                )
-            })?;
+        let asset_names = store.list_objects(&assets_prefix).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                anyhow!("Failed to list assets: {:?}", e),
+            )
+        })?;
 
         // Generate signed URLs for each asset
         let mut asset_urls = Vec::new();
@@ -1100,15 +1087,20 @@ async fn get_doc_assets_single(
             // Extract asset_id from filename (remove extension)
             if let Some(asset_id) = extract_asset_id_from_filename(&filename) {
                 let key = format!("{}/assets/{}", doc_id, filename);
-                let download_url = store
-                    .generate_download_presigned_url(&key)
-                    .await
-                    .map_err(|e| {
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            anyhow!("Failed to generate download URL for {}: {:?}", filename, e),
-                        )
-                    })?;
+                let download_url =
+                    store
+                        .generate_download_presigned_url(&key)
+                        .await
+                        .map_err(|e| {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                anyhow!(
+                                    "Failed to generate download URL for {}: {:?}",
+                                    filename,
+                                    e
+                                ),
+                            )
+                        })?;
 
                 asset_urls.push(AssetUrl {
                     asset_id,
