@@ -15,6 +15,7 @@ use axum::{
     Json, Router,
 };
 use axum_extra::typed_header::TypedHeader;
+use cuid::cuid2;
 use dashmap::{mapref::one::MappedRef, DashMap};
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -28,7 +29,7 @@ use tokio::{
     sync::mpsc::{channel, Receiver},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use tracing::{span, Instrument, Level, info, error, warn};
+use tracing::{error, info, span, warn, Instrument, Level};
 use url::Url;
 use y_sweet_core::{
     api_types::{
@@ -42,7 +43,6 @@ use y_sweet_core::{
     sync::awareness::Awareness,
     sync_kv::SyncKv,
 };
-use cuid::cuid2;
 
 const PLANE_VERIFIED_USER_DATA_HEADER: &str = "x-verified-user-data";
 
@@ -425,7 +425,10 @@ impl Server {
             .route("/doc/:doc_id/update", post(update_doc_deprecated))
             .route("/d/:doc_id/as-update", get(get_doc_as_update))
             .route("/d/:doc_id/update", post(update_doc))
-            .route("/d/:doc_id/generate-upload-presigned-url", post(generate_upload_presigned_url))
+            .route(
+                "/d/:doc_id/generate-upload-presigned-url",
+                post(generate_upload_presigned_url),
+            )
             .route(
                 "/d/:doc_id/ws/:doc_id2",
                 get(handle_socket_upgrade_full_path),
@@ -439,7 +442,10 @@ impl Server {
             .route("/ws/:doc_id", get(handle_socket_upgrade_single))
             .route("/as-update", get(get_doc_as_update_single))
             .route("/update", post(update_doc_single))
-            .route("/generate-upload-presigned-url", post(generate_upload_presigned_url_single))
+            .route(
+                "/generate-upload-presigned-url",
+                post(generate_upload_presigned_url_single),
+            )
             .layer(middleware::from_fn(Self::logging_middleware))
             .with_state(self.clone())
     }
@@ -896,7 +902,9 @@ fn get_authorization_from_plane_header(headers: HeaderMap) -> Result<Authorizati
 }
 
 fn get_extension_from_content_type(content_type: &str) -> String {
-    let mime = content_type.parse::<mime::Mime>().unwrap_or(mime::APPLICATION_OCTET_STREAM);
+    let mime = content_type
+        .parse::<mime::Mime>()
+        .unwrap_or(mime::APPLICATION_OCTET_STREAM);
     let extension = mime_guess::get_mime_extensions(&mime)
         .and_then(|exts| exts.first())
         .unwrap_or(&"bin");
@@ -921,13 +929,20 @@ async fn generate_upload_presigned_url(
     let object_id = cuid2();
     let extension = get_extension_from_content_type(&body.content_type);
     let object_name = format!("{}{}", object_id, extension);
-    
+
     // Create the key path: {doc_id}/assets/{object_name}
     let key = format!("{}/assets/{}", doc_id, object_name);
 
     let upload_url = if let Some(store) = &server_state.store {
-        store.generate_upload_presigned_url(&key).await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, anyhow!("Failed to generate upload URL: {:?}", e)))?
+        store
+            .generate_upload_presigned_url(&key)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    anyhow!("Failed to generate upload URL: {:?}", e),
+                )
+            })?
     } else {
         // For local development without store, return a dummy URL
         format!("file://localhost/{}", key)
@@ -945,7 +960,7 @@ async fn generate_upload_presigned_url_single(
     Json(body): Json<ContentUploadRequest>,
 ) -> Result<Json<ContentUploadResponse>, AppError> {
     let doc_id = server_state.get_single_doc_id()?;
-    
+
     // the doc server is meant to be run in Plane, so we expect verified plane
     // headers to be used for authorization.
     let _ = get_authorization_from_plane_header(headers)?;
@@ -954,13 +969,20 @@ async fn generate_upload_presigned_url_single(
     let object_id = cuid2();
     let extension = get_extension_from_content_type(&body.content_type);
     let object_name = format!("{}{}", object_id, extension);
-    
+
     // Create the key path: {doc_id}/assets/{object_name}
     let key = format!("{}/assets/{}", doc_id, object_name);
 
     let upload_url = if let Some(store) = &server_state.store {
-        store.generate_upload_presigned_url(&key).await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, anyhow!("Failed to generate upload URL: {:?}", e)))?
+        store
+            .generate_upload_presigned_url(&key)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    anyhow!("Failed to generate upload URL: {:?}", e),
+                )
+            })?
     } else {
         // For local development without store, return a dummy URL
         format!("file://localhost/{}", key)
@@ -1053,14 +1075,14 @@ mod test {
         // Test with actual extensions returned by mime_guess
         let jpeg_ext = get_extension_from_content_type("image/jpeg");
         assert!(jpeg_ext == ".jfif" || jpeg_ext == ".jpeg" || jpeg_ext == ".jpg");
-        
+
         assert_eq!(get_extension_from_content_type("image/png"), ".png");
         assert_eq!(get_extension_from_content_type("video/mp4"), ".mp4");
         assert_eq!(get_extension_from_content_type("application/pdf"), ".pdf");
-        
+
         let text_ext = get_extension_from_content_type("text/plain");
         assert!(text_ext == ".txt" || text_ext == ".asm");
-        
+
         assert_eq!(get_extension_from_content_type("invalid/type"), ".bin");
     }
 }

@@ -75,7 +75,7 @@ pub struct ContentUploadResponse {
     /// The signed URL for uploading the content
     #[serde(rename = "uploadUrl")]
     pub upload_url: String,
-    
+
     /// The object ID that will be used to store the content
     #[serde(rename = "objectId")]
     pub object_id: String,
