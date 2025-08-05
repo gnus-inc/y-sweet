@@ -426,7 +426,7 @@ impl Server {
             .route("/d/:doc_id/as-update", get(get_doc_as_update))
             .route("/d/:doc_id/update", post(update_doc))
             .route(
-                "/d/:doc_id/generate-upload-presigned-url",
+                "/d/:doc_id/assets",
                 post(generate_upload_presigned_url),
             )
             .route(
@@ -447,7 +447,7 @@ impl Server {
             .route("/as-update", get(get_doc_as_update_single))
             .route("/update", post(update_doc_single))
             .route(
-                "/generate-upload-presigned-url",
+                "/assets",
                 post(generate_upload_presigned_url_single),
             )
             .route(
@@ -919,8 +919,8 @@ fn get_extension_from_content_type(content_type: &str) -> String {
     format!(".{}", extension)
 }
 
-fn extract_object_id_from_filename(filename: &str) -> Option<String> {
-    // Find the last dot to separate object_id and extension
+fn extract_asset_id_from_filename(filename: &str) -> Option<String> {
+    // Find the last dot to separate asset_id and extension
     if let Some(last_dot_pos) = filename.rfind('.') {
         if last_dot_pos > 0 {
             return Some(filename[..last_dot_pos].to_string());
@@ -944,13 +944,13 @@ async fn generate_upload_presigned_url(
         Err((StatusCode::NOT_FOUND, anyhow!("Doc {} not found", doc_id)))?;
     }
 
-    // Generate object ID with cuid and extension
-    let object_id = cuid2();
+    // Generate asset ID with cuid and extension
+    let asset_id = cuid2();
     let extension = get_extension_from_content_type(&body.content_type);
-    let object_name = format!("{}{}", object_id, extension);
+    let asset_name = format!("{}{}", asset_id, extension);
 
-    // Create the key path: {doc_id}/assets/{object_name}
-    let key = format!("{}/assets/{}", doc_id, object_name);
+    // Create the key path: {doc_id}/assets/{asset_name}
+    let key = format!("{}/assets/{}", doc_id, asset_name);
 
     let upload_url = if let Some(store) = &server_state.store {
         store
@@ -969,7 +969,7 @@ async fn generate_upload_presigned_url(
 
     Ok(Json(ContentUploadResponse {
         upload_url,
-        object_id: object_name,
+        asset_id: asset_name,
     }))
 }
 
@@ -984,13 +984,13 @@ async fn generate_upload_presigned_url_single(
     // headers to be used for authorization.
     let _ = get_authorization_from_plane_header(headers)?;
 
-    // Generate object ID with cuid and extension
-    let object_id = cuid2();
+    // Generate asset ID with cuid and extension
+    let asset_id = cuid2();
     let extension = get_extension_from_content_type(&body.content_type);
-    let object_name = format!("{}{}", object_id, extension);
+    let asset_name = format!("{}{}", asset_id, extension);
 
-    // Create the key path: {doc_id}/assets/{object_name}
-    let key = format!("{}/assets/{}", doc_id, object_name);
+    // Create the key path: {doc_id}/assets/{asset_name}
+    let key = format!("{}/assets/{}", doc_id, asset_name);
 
     let upload_url = if let Some(store) = &server_state.store {
         store
@@ -1009,7 +1009,7 @@ async fn generate_upload_presigned_url_single(
 
     Ok(Json(ContentUploadResponse {
         upload_url,
-        object_id: object_name,
+        asset_id: asset_name,
     }))
 }
 
@@ -1027,9 +1027,9 @@ async fn get_doc_assets(
     }
 
     let assets = if let Some(store) = &server_state.store {
-        // List objects in the assets directory
+        // List assets in the assets directory
         let assets_prefix = format!("{}/assets/", doc_id);
-        let object_names = store
+        let asset_names = store
             .list_objects(&assets_prefix)
             .await
             .map_err(|e| {
@@ -1041,9 +1041,9 @@ async fn get_doc_assets(
 
         // Generate signed URLs for each asset
         let mut asset_urls = Vec::new();
-        for filename in object_names {
-            // Extract object_id from filename (remove extension)
-            if let Some(object_id) = extract_object_id_from_filename(&filename) {
+        for filename in asset_names {
+            // Extract asset_id from filename (remove extension)
+            if let Some(asset_id) = extract_asset_id_from_filename(&filename) {
                 let key = format!("{}/assets/{}", doc_id, filename);
                 let download_url = store
                     .generate_download_presigned_url(&key)
@@ -1056,7 +1056,7 @@ async fn get_doc_assets(
                     })?;
 
                 asset_urls.push(AssetUrl {
-                    object_id,
+                    asset_id,
                     download_url,
                 });
             }
@@ -1082,9 +1082,9 @@ async fn get_doc_assets_single(
     let _ = get_authorization_from_plane_header(headers)?;
 
     let assets = if let Some(store) = &server_state.store {
-        // List objects in the assets directory
+        // List assets in the assets directory
         let assets_prefix = format!("{}/assets/", doc_id);
-        let object_names = store
+        let asset_names = store
             .list_objects(&assets_prefix)
             .await
             .map_err(|e| {
@@ -1096,9 +1096,9 @@ async fn get_doc_assets_single(
 
         // Generate signed URLs for each asset
         let mut asset_urls = Vec::new();
-        for filename in object_names {
-            // Extract object_id from filename (remove extension)
-            if let Some(object_id) = extract_object_id_from_filename(&filename) {
+        for filename in asset_names {
+            // Extract asset_id from filename (remove extension)
+            if let Some(asset_id) = extract_asset_id_from_filename(&filename) {
                 let key = format!("{}/assets/{}", doc_id, filename);
                 let download_url = store
                     .generate_download_presigned_url(&key)
@@ -1111,7 +1111,7 @@ async fn get_doc_assets_single(
                     })?;
 
                 asset_urls.push(AssetUrl {
-                    object_id,
+                    asset_id,
                     download_url,
                 });
             }
