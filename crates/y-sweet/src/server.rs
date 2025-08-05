@@ -21,14 +21,14 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     sync::{Arc, RwLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     net::TcpListener,
     sync::mpsc::{channel, Receiver},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use tracing::{span, Instrument, Level};
+use tracing::{span, Instrument, Level, info, error, warn};
 use url::Url;
 use y_sweet_core::{
     api_types::{
@@ -57,6 +57,13 @@ pub struct AppError(StatusCode, anyhow::Error);
 impl std::error::Error for AppError {}
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // Log the error with structured logging
+        error!(
+            event = "app_error",
+            status_code = %self.0,
+            error = %self.1,
+            error_debug = ?self.1
+        );
         (self.0, format!("Something went wrong: {}", self.1)).into_response()
     }
 }
@@ -125,8 +132,9 @@ impl Server {
 
     pub async fn create_doc(&self) -> Result<String> {
         let doc_id = nanoid::nanoid!();
+        info!(event = "document_creation_started", doc_id = %doc_id);
         self.load_doc(&doc_id).await?;
-        tracing::info!(doc_id=?doc_id, "Created doc");
+        info!(event = "document_created", doc_id = %doc_id);
         Ok(doc_id)
     }
 
@@ -315,6 +323,86 @@ impl Server {
         }
     }
 
+    /// Structured logging middleware for request/response logging
+    pub async fn logging_middleware(req: Request, next: Next) -> impl IntoResponse {
+        let start = Instant::now();
+        let method = req.method().clone();
+        let uri = req.uri().clone();
+        let user_agent = req
+            .headers()
+            .get("user-agent")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("unknown");
+        let remote_addr = req
+            .extensions()
+            .get::<std::net::SocketAddr>()
+            .map(|addr| addr.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Extract path parameters for better logging
+        let path_params = if let Some(path) = uri.path().split('/').collect::<Vec<_>>().get(2..) {
+            path.join("/")
+        } else {
+            "".to_string()
+        };
+
+        let span = span!(
+            Level::INFO,
+            "http_request",
+            method = %method,
+            uri = %uri,
+            user_agent = %user_agent,
+            remote_addr = %remote_addr,
+            path = %path_params
+        );
+
+        let _enter = span.enter();
+
+        info!(
+            event = "request_started",
+            method = %method,
+            uri = %uri,
+            user_agent = %user_agent,
+            remote_addr = %remote_addr,
+            path = %path_params
+        );
+
+        let response = next.run(req).await;
+        let status = response.status();
+        let duration = start.elapsed();
+
+        // Log response with appropriate level based on status code
+        if status.is_server_error() {
+            error!(
+                event = "request_failed",
+                method = %method,
+                uri = %uri,
+                status = %status,
+                duration_ms = %duration.as_millis(),
+                error_type = "server_error"
+            );
+        } else if status.is_client_error() {
+            warn!(
+                event = "request_failed",
+                method = %method,
+                uri = %uri,
+                status = %status,
+                duration_ms = %duration.as_millis(),
+                error_type = "client_error"
+            );
+        } else {
+            info!(
+                event = "request_completed",
+                method = %method,
+                uri = %uri,
+                status = %status,
+                duration_ms = %duration.as_millis()
+            );
+        }
+
+        response
+    }
+
     pub async fn redact_error_middleware(req: Request, next: Next) -> impl IntoResponse {
         let resp = next.run(req).await;
         if resp.status().is_server_error() || resp.status().is_client_error() {
@@ -342,6 +430,7 @@ impl Server {
                 "/d/:doc_id/ws/:doc_id2",
                 get(handle_socket_upgrade_full_path),
             )
+            .layer(middleware::from_fn(Self::logging_middleware))
             .with_state(self.clone())
     }
 
@@ -351,6 +440,7 @@ impl Server {
             .route("/as-update", get(get_doc_as_update_single))
             .route("/update", post(update_doc_single))
             .route("/generate_upload_presigned_url", post(generate_upload_presigned_url_single))
+            .layer(middleware::from_fn(Self::logging_middleware))
             .with_state(self.clone())
     }
 
@@ -542,8 +632,10 @@ async fn handle_socket_upgrade_deprecated(
     Query(params): Query<HandlerParams>,
     State(server_state): State<Arc<Server>>,
 ) -> Result<Response, AppError> {
-    tracing::warn!(
-        "/doc/ws/:doc_id is deprecated; call /doc/:doc_id/auth instead and use the returned URL."
+    warn!(
+        event = "deprecated_endpoint_used",
+        endpoint = "/doc/ws/:doc_id",
+        suggestion = "call /doc/:doc_id/auth instead and use the returned URL"
     );
     let authorization = server_state.verify_doc_token(params.token.as_deref(), &doc_id)?;
     handle_socket_upgrade(ws, Path(doc_id), authorization, State(server_state)).await
@@ -594,41 +686,60 @@ async fn handle_socket(
     let (mut sink, mut stream) = socket.split();
     let (send, mut recv) = channel(1024);
 
+    info!(
+        event = "websocket_connected",
+        authorization_type = %match authorization {
+            Authorization::Full => "Full",
+            Authorization::ReadOnly => "ReadOnly",
+        }
+    );
+
     tokio::spawn(async move {
         while let Some(msg) = recv.recv().await {
-            let _ = sink.send(Message::Binary(msg)).await;
+            if let Err(e) = sink.send(Message::Binary(msg)).await {
+                error!(event = "websocket_send_error", error = %e);
+                break;
+            }
         }
     });
 
     let connection = DocConnection::new(awareness, authorization, move |bytes| {
         if let Err(e) = send.try_send(bytes.to_vec()) {
-            tracing::warn!(?e, "Error sending message");
+            warn!(event = "websocket_message_error", error = %e);
         }
     });
 
+    let mut message_count = 0u64;
     loop {
         tokio::select! {
             Some(msg) = stream.next() => {
                 let msg = match msg {
-                    Ok(Message::Binary(bytes)) => bytes,
-                    Ok(Message::Close(_)) => break,
-                    Err(_e) => {
+                    Ok(Message::Binary(bytes)) => {
+                        message_count += 1;
+                        bytes
+                    }
+                    Ok(Message::Close(_)) => {
+                        info!(event = "websocket_closed", total_messages = %message_count, reason = "client_close");
+                        break;
+                    }
+                    Err(e) => {
                         // The stream will complain about things like
                         // connections being lost without handshake.
+                        warn!(event = "websocket_stream_error", error = %e);
                         continue;
                     }
                     msg => {
-                        tracing::warn!(?msg, "Received non-binary message");
+                        warn!(event = "websocket_invalid_message", message = ?msg);
                         continue;
                     }
                 };
 
                 if let Err(e) = connection.send(&msg).await {
-                    tracing::warn!(?e, "Error handling message");
+                    error!(event = "websocket_message_handling_error", error = %e, message_count = %message_count);
                 }
             }
             _ = cancellation_token.cancelled() => {
-                tracing::debug!("Closing doc connection due to server cancel...");
+                info!(event = "websocket_closed", total_messages = %message_count, reason = "server_shutdown");
                 break;
             }
         }
@@ -654,8 +765,10 @@ async fn check_store_deprecated(
     auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
     State(server_state): State<Arc<Server>>,
 ) -> Result<Json<Value>, AppError> {
-    tracing::warn!(
-        "GET check_store is deprecated, use POST check_store with an empty body instead."
+    warn!(
+        event = "deprecated_endpoint_used",
+        endpoint = "GET /check_store",
+        suggestion = "use POST /check_store with an empty body instead"
     );
     check_store(auth_header, State(server_state)).await
 }

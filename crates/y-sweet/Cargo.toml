@@ -32,7 +32,12 @@ tokio = { version = "1.29.1", features = [
 tokio-stream = "0.1.14"
 tokio-util = { version = "0.7.11", features = ["rt"] }
 tracing = "0.1.37"
-tracing-subscriber = { version = "0.3.17", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3.17", features = [
+    "env-filter",
+    "fmt",
+    "json",
+    "time",
+] }
 url = "2.4.0"
 y-sweet-core = { version = "0.8.2", path = "../y-sweet-core", features = [
     "sync",
