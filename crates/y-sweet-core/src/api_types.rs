@@ -81,6 +81,23 @@ pub struct ContentUploadResponse {
     pub object_id: String,
 }
 
+#[derive(Serialize)]
+pub struct AssetUrl {
+    /// The object ID (without extension) of the asset
+    #[serde(rename = "objectId")]
+    pub object_id: String,
+
+    /// The signed URL for downloading the asset
+    #[serde(rename = "downloadUrl")]
+    pub download_url: String,
+}
+
+#[derive(Serialize)]
+pub struct AssetsResponse {
+    /// List of asset URLs with signed download URLs
+    pub assets: Vec<AssetUrl>,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct DocCreationRequest {
     /// The ID of the document to create. If not provided, a random ID will be generated.
