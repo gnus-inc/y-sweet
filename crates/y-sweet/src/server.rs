@@ -425,7 +425,7 @@ impl Server {
             .route("/doc/:doc_id/update", post(update_doc_deprecated))
             .route("/d/:doc_id/as-update", get(get_doc_as_update))
             .route("/d/:doc_id/update", post(update_doc))
-            .route("/d/:doc_id/generate_upload_presigned_url", post(generate_upload_presigned_url))
+            .route("/d/:doc_id/generate-upload-presigned-url", post(generate_upload_presigned_url))
             .route(
                 "/d/:doc_id/ws/:doc_id2",
                 get(handle_socket_upgrade_full_path),
@@ -439,7 +439,7 @@ impl Server {
             .route("/ws/:doc_id", get(handle_socket_upgrade_single))
             .route("/as-update", get(get_doc_as_update_single))
             .route("/update", post(update_doc_single))
-            .route("/generate_upload_presigned_url", post(generate_upload_presigned_url_single))
+            .route("/generate-upload-presigned-url", post(generate_upload_presigned_url_single))
             .layer(middleware::from_fn(Self::logging_middleware))
             .with_state(self.clone())
     }
