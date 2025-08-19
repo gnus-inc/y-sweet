@@ -40,7 +40,7 @@ impl S3Store {
         let loader = aws_config::from_env().region(Region::new(config.region.clone()));
         let base = loader.load().await;
 
-        // 明示的な認証情報（環境変数や ~/.aws がある場合は不要だが、互換S3やCIで便利）
+        // Explicit credentials (not needed if environment variables or ~/.aws exist, but useful for compatible S3 and CI)
         let creds = AwsCredentials::new(
             config.key,
             config.secret,
@@ -54,7 +54,7 @@ impl S3Store {
             .credentials_provider(creds)
             .force_path_style(config.path_style);
 
-        // 互換S3やローカル（MinIO）を使う場合に endpoint を上書き
+        // Override endpoint for compatible S3 or local (MinIO) usage
         if !config.endpoint.is_empty() {
             builder = builder.endpoint_url(config.endpoint);
         }
@@ -70,21 +70,21 @@ impl S3Store {
         })
     }
 
-    /// バケット存在チェック（HeadBucket）
+    /// Check bucket existence (HeadBucket)
     pub async fn init(&self) -> Result<()> {
         if self._bucket_checked.get().is_some() {
             return Ok(());
         }
 
-        // HeadBucket で存在確認
+        // Check existence with HeadBucket
         match self.client.head_bucket().bucket(&self.bucket).send().await {
             Ok(_) => {
                 self._bucket_checked.set(()).ok();
                 Ok(())
             }
             Err(e) => {
-                // AWS SDK v1.x では詳細なエラー分類が変更されているため、
-                // メッセージベースの判定を使用
+                // AWS SDK v1.x has changed detailed error classification,
+                // so use message-based detection
                 let err_str = format!("{e:?}");
                 if err_str.contains("NoSuchBucket") {
                     Err(StoreError::BucketDoesNotExist(format!(
@@ -122,7 +122,7 @@ impl S3Store {
         }
     }
 
-    // ========== 単一オブジェクト操作 ==========
+    // ========== Single Object Operations ==========
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         self.init().await?;
         let k = self.prefixed_key(key);
@@ -312,10 +312,10 @@ impl S3Store {
                 ))
             })?;
 
-            // AWS SDK v1.x では contents() は &[Object] を返す
+            // AWS SDK v1.x returns &[Object] from contents()
             for obj in out.contents() {
                 if let Some(key) = obj.key() {
-                    // バケット接頭辞を取り除いた相対パスにする
+                    // Remove bucket prefix to get relative path
                     if let Some(rel) = key.strip_prefix(&full_prefix) {
                         if !rel.is_empty() {
                             results.push(rel.to_string());
@@ -334,12 +334,12 @@ impl S3Store {
         Ok(results)
     }
 
-    // ========== Prefix コピー（サーバーサイド） ==========
-    async fn copy_object_server_side(&self, source_key: &str, destination_key: &str) -> Result<()> {
-        // copy_source は "bucket/source_key" 形式（SDK 側で適切にエンコードされます）
+    // ========== Prefix Copy (Server Side) ==========
+    async fn copy_object(&self, source_key: &str, destination_key: &str) -> Result<()> {
+        // copy_source format is "bucket/source_key" (SDK handles proper encoding)
         let copy_source = format!("{}/{}", self.bucket, self.prefixed_key(source_key));
 
-        // destination はすでに prefixed_key 済みにする
+        // destination should already be prefixed_key
         let dest = self.prefixed_key(destination_key);
 
         self.client
@@ -359,29 +359,29 @@ impl S3Store {
         Ok(())
     }
 
-    /// source_doc_id 配下のすべてのオブジェクトを destination_doc_id 配下へコピー
+    /// Copy all objects under source_doc_id to destination_doc_id
     async fn copy_document(&self, source_doc_id: &str, destination_doc_id: &str) -> Result<()> {
         self.init().await?;
 
-        // 1) source のフルプレフィックスから相対キー一覧を取得
+        // 1) Get relative key list from source full prefix
         let source_prefix = format!("{}/", source_doc_id.trim_matches('/'));
         let entries = self.list_objects(&source_prefix).await?;
 
-        // 2) 各オブジェクトをサーバーサイドコピー
+        // 2) Copy each object server-side
         for rel in entries {
             let src_key = format!("{}/{}", source_doc_id.trim_matches('/'), rel);
             let dst_key = format!("{}/{}", destination_doc_id.trim_matches('/'), rel);
-            self.copy_object_server_side(&src_key, &dst_key).await?;
+            self.copy_object(&src_key, &dst_key).await?;
         }
 
         Ok(())
     }
 }
 
-// S3 の NotFound 判定ユーティリティ
+// S3 NotFound detection utility
 fn is_not_found(err: &aws_sdk_s3::error::SdkError<impl std::fmt::Debug>) -> bool {
-    // AWS SDK v1.x では詳細なエラー分類が変更されているため、
-    // メッセージベースの判定を使用
+    // AWS SDK v1.x has changed detailed error classification,
+    // so use message-based detection
     let s = format!("{err:?}");
     s.contains("NotFound")
         || s.contains("404")
