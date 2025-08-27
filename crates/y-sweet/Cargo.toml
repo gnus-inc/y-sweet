@@ -46,5 +46,11 @@ y-sweet-core = { version = "0.8.2", path = "../y-sweet-core", features = [
 yrs = { version = "0.19.1" }
 yrs-kvstore = "0.3.0"
 
+# OpenTelemetry dependencies for APM
+opentelemetry = { version = "0.20", features = ["rt-tokio"] }
+opentelemetry-http = "0.8"
+opentelemetry-jaeger = { version = "0.19", features = ["rt-tokio"] }
+tracing-opentelemetry = "0.20"
+
 [dev-dependencies]
 http = "1.1.0"

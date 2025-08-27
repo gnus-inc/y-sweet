@@ -713,6 +713,10 @@ async fn handle_socket_upgrade(
     authorization: Authorization,
     State(server_state): State<Arc<Server>>,
 ) -> Result<Response, AppError> {
+    // Create a span for the WebSocket upgrade
+    let _span = tracing::info_span!("websocket_upgrade", doc_id = %doc_id);
+    let _span_guard = _span.enter();
+
     if !matches!(authorization, Authorization::Full) && !server_state.docs.contains_key(&doc_id) {
         return Err(AppError(
             StatusCode::NOT_FOUND,
@@ -789,6 +793,13 @@ async fn handle_socket(
     authorization: Authorization,
     cancellation_token: CancellationToken,
 ) {
+    // Create a span for the WebSocket connection
+    let _span = tracing::info_span!("websocket_connection", authorization_type = %match authorization {
+        Authorization::Full => "Full",
+        Authorization::ReadOnly => "ReadOnly",
+    });
+    let _span_guard = _span.enter();
+
     let (mut sink, mut stream) = socket.split();
     let (send, mut recv) = channel(1024);
 
