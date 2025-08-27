@@ -175,6 +175,40 @@ async fn main() -> Result<()> {
         .with(filter)
         .init();
 
+    // Initialize OpenTelemetry APM if enabled
+    let datadog_enabled = env::var("DD_TRACE_ENABLED")
+        .unwrap_or_else(|_| "false".to_string())
+        .to_lowercase()
+        == "true";
+
+    let tracer_provider = if datadog_enabled {
+        // Initialize OpenTelemetry tracer with Jaeger exporter
+        let _tracer_provider = opentelemetry_jaeger::new_agent_pipeline()
+            .with_service_name(env::var("DD_SERVICE").unwrap_or_else(|_| "y-sweet".to_string()))
+            .with_endpoint(
+                env::var("DD_TRACE_AGENT_URL")
+                    .unwrap_or_else(|_| "http://localhost:14268/api/traces".to_string()),
+            )
+            .install_batch(opentelemetry::runtime::Tokio)
+            .expect("Failed to initialize OpenTelemetry tracer");
+
+        tracing::info!(
+            message = "OpenTelemetry APM initialized successfully",
+            event = "opentelemetry_apm_initialized",
+            service = env::var("DD_SERVICE").unwrap_or_else(|_| "y-sweet".to_string()),
+            environment = env::var("DD_ENV").unwrap_or_else(|_| "development".to_string()),
+            version = env::var("DD_VERSION").unwrap_or_else(|_| VERSION.to_string())
+        );
+
+        Some(())
+    } else {
+        tracing::info!(
+            message = "OpenTelemetry APM disabled (set DD_TRACE_ENABLED=true to enable)",
+            event = "opentelemetry_apm_disabled"
+        );
+        None
+    };
+
     match &opts.subcmd {
         ServSubcommand::Serve {
             port,
@@ -257,6 +291,22 @@ async fn main() -> Result<()> {
                 message = "Server shut down.",
                 event = "server_shutdown_completed"
             );
+
+            // Shutdown OpenTelemetry APM if enabled
+            if tracer_provider.is_some() {
+                tracing::info!(
+                    message = "Shutting down OpenTelemetry APM",
+                    event = "opentelemetry_apm_shutdown_started"
+                );
+
+                // Shutdown OpenTelemetry tracer
+                opentelemetry::global::shutdown_tracer_provider();
+
+                tracing::info!(
+                    message = "OpenTelemetry APM shut down successfully",
+                    event = "opentelemetry_apm_shutdown_completed"
+                );
+            }
         }
         ServSubcommand::GenAuth { json } => {
             let auth = Authenticator::gen_key()?;
