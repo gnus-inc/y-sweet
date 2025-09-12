@@ -232,7 +232,11 @@ impl S3Store {
     }
 
     // ========== Presigned URL ==========
-    pub async fn generate_upload_presigned_url(&self, key: &str, content_type: &str) -> Result<String> {
+    pub async fn generate_upload_presigned_url(
+        &self,
+        key: &str,
+        content_type: &str,
+    ) -> Result<String> {
         self.init().await?;
         let k = self.prefixed_key(key);
 
