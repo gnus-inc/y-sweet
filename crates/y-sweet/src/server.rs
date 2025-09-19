@@ -1119,7 +1119,7 @@ async fn generate_upload_presigned_url(
 
     let upload_url = if let Some(store) = &server_state.store {
         store
-            .generate_upload_presigned_url(&key)
+            .generate_upload_presigned_url(&key, &body.content_type)
             .await
             .map_err(|e| {
                 (
@@ -1170,7 +1170,7 @@ async fn generate_upload_presigned_url_single(
 
     let upload_url = if let Some(store) = &server_state.store {
         store
-            .generate_upload_presigned_url(&key)
+            .generate_upload_presigned_url(&key, &body.content_type)
             .await
             .map_err(|e| {
                 (
@@ -1331,6 +1331,22 @@ async fn copy_document(
         ));
     }
 
+    // Force sync from memory to S3 before copying to ensure we have the latest data
+    if let Some(doc) = server_state.docs.get(&source_doc_id) {
+        tracing::debug!(
+            "Forcing sync of source document {} before copy",
+            source_doc_id
+        );
+        if let Err(e) = doc.sync_kv().persist().await {
+            tracing::warn!(
+                "Failed to force sync of source document {}: {}",
+                source_doc_id,
+                e
+            );
+            // Continue with copy operation even if sync fails
+        }
+    }
+
     // Perform the copy operation (will overwrite if destination exists)
     if let Some(store) = &server_state.store {
         store
@@ -1396,6 +1412,134 @@ mod test {
         assert_eq!(token.url, expected_url);
         assert_eq!(token.doc_id, doc_id);
         assert!(token.token.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_copy_document_with_sync() {
+        use async_trait::async_trait;
+        use dashmap::DashMap;
+        use std::sync::Arc;
+        use y_sweet_core::store::Result;
+        use yrs_kvstore::KVStore;
+
+        #[derive(Default, Clone)]
+        struct TestStore {
+            data: Arc<DashMap<String, Vec<u8>>>,
+        }
+
+        #[async_trait]
+        impl Store for TestStore {
+            async fn init(&self) -> Result<()> {
+                Ok(())
+            }
+
+            async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+                Ok(self.data.get(key).map(|v| v.clone()))
+            }
+
+            async fn set(&self, key: &str, value: Vec<u8>) -> Result<()> {
+                self.data.insert(key.to_owned(), value);
+                Ok(())
+            }
+
+            async fn remove(&self, key: &str) -> Result<()> {
+                self.data.remove(key);
+                Ok(())
+            }
+
+            async fn exists(&self, key: &str) -> Result<bool> {
+                Ok(self.data.contains_key(key))
+            }
+
+            async fn generate_upload_presigned_url(&self, key: &str) -> Result<String> {
+                Ok(format!("test://localhost/{}", key))
+            }
+
+            async fn generate_download_presigned_url(&self, key: &str) -> Result<String> {
+                Ok(format!("test://localhost/{}", key))
+            }
+
+            async fn list_objects(&self, prefix: &str) -> Result<Vec<String>> {
+                let mut objects = Vec::new();
+                for entry in self.data.iter() {
+                    let key = entry.key();
+                    if key.starts_with(prefix) {
+                        let relative_key = &key[prefix.len()..];
+                        objects.push(relative_key.to_string());
+                    }
+                }
+                Ok(objects)
+            }
+
+            async fn copy_document(
+                &self,
+                source_doc_id: &str,
+                destination_doc_id: &str,
+            ) -> Result<()> {
+                let source_prefix = format!("{}/", source_doc_id);
+                let destination_prefix = format!("{}/", destination_doc_id);
+
+                let keys_to_copy: Vec<(String, Vec<u8>)> = self
+                    .data
+                    .iter()
+                    .filter_map(|entry| {
+                        let key = entry.key();
+                        if key.starts_with(&source_prefix) {
+                            let relative_path = &key[source_prefix.len()..];
+                            let destination_key =
+                                format!("{}{}", destination_prefix, relative_path);
+                            Some((destination_key, entry.value().clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                for (key, value) in keys_to_copy {
+                    self.data.insert(key, value);
+                }
+
+                Ok(())
+            }
+        }
+
+        let store = TestStore::default();
+        let server_state = Server::new(
+            Some(Box::new(store.clone())),
+            Duration::from_secs(60),
+            None,
+            None,
+            CancellationToken::new(),
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Create a source document
+        let source_doc_id = server_state.create_doc().await.unwrap();
+
+        // Add some data to the document
+        if let Some(doc) = server_state.docs.get(&source_doc_id) {
+            doc.sync_kv().upsert(b"test_key", b"test_value").unwrap();
+        }
+
+        // Test copy operation
+        let destination_doc_id = "test_destination".to_string();
+        let result = copy_document(
+            Path(source_doc_id.clone()),
+            State(Arc::new(server_state)),
+            None,
+            Json(DocCopyRequest {
+                destination_doc_id: destination_doc_id.clone(),
+            }),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert_eq!(response.source_doc_id, source_doc_id);
+        assert_eq!(response.destination_doc_id, destination_doc_id);
+        assert!(response.success);
     }
 
     #[tokio::test]
