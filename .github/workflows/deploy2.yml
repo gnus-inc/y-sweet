@@ -1,4 +1,4 @@
-name: Deploy to Amazon ECS (y-sweet)
+name: Deploy to Amazon ECS (y-sweet) for New Dev Environment
 
 on:
   push:
