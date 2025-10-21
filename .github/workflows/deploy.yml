@@ -28,7 +28,7 @@ jobs:
         id: set-vars
         run: |
           if [[ "${{ github.ref_name }}" == "main" ]]; then
-            echo "ENVIRONMENT=b-dev" >> $GITHUB_ENV
+            echo "ENVIRONMENT=dev" >> $GITHUB_ENV
             echo "ASSUME_ROLE=${{ secrets.DEV_ASSUME_ROLE }}" >> $GITHUB_ENV
             echo "SERVICE_NUM=${{ vars.DEV_SERVICE_NUM }}" >> $GITHUB_ENV
           elif [[ "${{ github.ref_name }}" == release/* ]]; then
