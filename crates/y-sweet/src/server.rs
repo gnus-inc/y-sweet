@@ -17,6 +17,7 @@ use axum::{
 use axum_extra::typed_header::TypedHeader;
 use cuid::cuid2;
 use dashmap::{mapref::one::MappedRef, DashMap};
+use ddtrace::axum::OtelAxumLayer;
 use futures::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use serde::Deserialize;
@@ -533,6 +534,7 @@ impl Server {
             .route("/d/:doc_id", delete(delete_document))
             .route("/d/:doc_id/copy", post(copy_document))
             .layer(middleware::from_fn(Self::logging_middleware))
+            .layer(OtelAxumLayer::default())
             .with_state(self.clone())
     }
 
@@ -544,6 +546,7 @@ impl Server {
             .route("/assets", post(generate_upload_presigned_url_single))
             .route("/assets", get(get_doc_assets_single))
             .layer(middleware::from_fn(Self::logging_middleware))
+            .layer(OtelAxumLayer::default())
             .with_state(self.clone())
     }
 
