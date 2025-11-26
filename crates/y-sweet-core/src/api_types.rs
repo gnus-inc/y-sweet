@@ -124,6 +124,21 @@ pub struct DocCopyResponse {
     pub success: bool,
 }
 
+#[derive(Serialize)]
+pub struct DocDeleteResponse {
+    /// The document that was deleted.
+    #[serde(rename = "docId")]
+    pub doc_id: String,
+    /// Whether the stored snapshot (data.ysweet) was removed.
+    #[serde(rename = "dataDeleted")]
+    pub data_deleted: bool,
+    /// Number of asset objects removed from storage.
+    #[serde(rename = "deletedAssets")]
+    pub deleted_assets: usize,
+    /// Indicates that the delete operation completed without errors.
+    pub success: bool,
+}
+
 /// Validate that the document name contains only alphanumeric characters, dashes, and underscores.
 /// This is the same alphabet used by nanoid when we generate a document name.
 pub fn validate_doc_name(doc_name: &str) -> bool {

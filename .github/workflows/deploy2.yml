@@ -1,12 +1,9 @@
-name: Deploy to Amazon ECS (y-sweet)
+name: Deploy to Amazon ECS (y-sweet) for New Dev Environment
 
 on:
   push:
     branches:
       - main
-      - release/**
-    tags:
-      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -28,17 +25,9 @@ jobs:
         id: set-vars
         run: |
           if [[ "${{ github.ref_name }}" == "main" ]]; then
-            echo "ENVIRONMENT=dev" >> $GITHUB_ENV
-            echo "ASSUME_ROLE=${{ secrets.DEV_ASSUME_ROLE }}" >> $GITHUB_ENV
-            echo "SERVICE_NUM=${{ vars.DEV_SERVICE_NUM }}" >> $GITHUB_ENV
-          elif [[ "${{ github.ref_name }}" == release/* ]]; then
-            echo "ENVIRONMENT=stg" >> $GITHUB_ENV
-            echo "ASSUME_ROLE=${{ secrets.STG_ASSUME_ROLE }}" >> $GITHUB_ENV
-            echo "SERVICE_NUM=${{ vars.STG_SERVICE_NUM }}" >> $GITHUB_ENV
-          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "ENVIRONMENT=prd" >> $GITHUB_ENV
-            echo "ASSUME_ROLE=${{ secrets.PRD_ASSUME_ROLE }}" >> $GITHUB_ENV
-            echo "SERVICE_NUM=${{ vars.PRD_SERVICE_NUM }}" >> $GITHUB_ENV
+            echo "ENVIRONMENT=dev2" >> $GITHUB_ENV
+            echo "ASSUME_ROLE=${{ secrets.DEV2_ASSUME_ROLE }}" >> $GITHUB_ENV
+            echo "SERVICE_NUM=${{ vars.DEV2_SERVICE_NUM }}" >> $GITHUB_ENV
           fi
 
       - name: Set additional environment variables

@@ -39,6 +39,7 @@ tracing-subscriber = { version = "0.3.17", features = [
     "json",
     "time",
 ] }
+ddtrace = { version = "0.2.1", features = ["axum"] }
 url = "2.4.0"
 y-sweet-core = { version = "0.8.2", path = "../y-sweet-core", features = [
     "sync",

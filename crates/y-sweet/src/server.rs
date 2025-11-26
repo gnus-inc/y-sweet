@@ -11,12 +11,13 @@ use axum::{
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use axum_extra::typed_header::TypedHeader;
 use cuid::cuid2;
 use dashmap::{mapref::one::MappedRef, DashMap};
+use ddtrace::axum::OtelAxumLayer;
 use futures::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use serde::Deserialize;
@@ -36,12 +37,12 @@ use y_sweet_core::{
     api_types::{
         validate_doc_name, AssetUrl, AssetsResponse, AuthDocRequest, Authorization, ClientToken,
         ContentUploadRequest, ContentUploadResponse, DocCopyRequest, DocCopyResponse,
-        DocCreationRequest, NewDocResponse,
+        DocCreationRequest, DocDeleteResponse, NewDocResponse,
     },
     auth::{Authenticator, ExpirationTimeEpochMillis, DEFAULT_EXPIRATION_SECONDS},
     doc_connection::DocConnection,
     doc_sync::DocWithSyncKv,
-    store::Store,
+    store::{Store, StoreError},
     sync::awareness::Awareness,
     sync_kv::SyncKv,
 };
@@ -530,8 +531,10 @@ impl Server {
                 "/d/:doc_id/ws/:doc_id2",
                 get(handle_socket_upgrade_full_path),
             )
+            .route("/d/:doc_id", delete(delete_document))
             .route("/d/:doc_id/copy", post(copy_document))
             .layer(middleware::from_fn(Self::logging_middleware))
+            .layer(OtelAxumLayer::default())
             .with_state(self.clone())
     }
 
@@ -543,6 +546,7 @@ impl Server {
             .route("/assets", post(generate_upload_presigned_url_single))
             .route("/assets", get(get_doc_assets_single))
             .layer(middleware::from_fn(Self::logging_middleware))
+            .layer(OtelAxumLayer::default())
             .with_state(self.clone())
     }
 
@@ -1297,6 +1301,126 @@ async fn get_doc_assets_single(
     }
 }
 
+async fn delete_document(
+    Path(doc_id): Path<String>,
+    State(server_state): State<Arc<Server>>,
+    auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
+) -> Result<Json<DocDeleteResponse>, AppError> {
+    // Check authentication - this is an admin-only API
+    server_state.check_auth(auth_header)?;
+
+    if !validate_doc_name(&doc_id) {
+        return Err(AppError(
+            StatusCode::BAD_REQUEST,
+            anyhow!("Invalid document ID"),
+        ));
+    }
+
+    if !server_state.doc_exists(&doc_id).await {
+        return Err(AppError(
+            StatusCode::NOT_FOUND,
+            anyhow!("Document not found"),
+        ));
+    }
+
+    info!(
+        message = "Deleting document",
+        event = "document_delete_started",
+        doc_id = %doc_id
+    );
+
+    let mut existed_in_memory = false;
+    if let Some((_, doc)) = server_state.docs.remove(&doc_id) {
+        existed_in_memory = true;
+        // Shut down persistence to avoid resurrecting the document
+        doc.sync_kv().shutdown();
+    }
+
+    let mut data_deleted = false;
+    let mut deleted_assets = 0usize;
+
+    if let Some(store) = &server_state.store {
+        let data_key = format!("{}/data.ysweet", doc_id);
+        match store.remove(&data_key).await {
+            Ok(_) => {
+                data_deleted = true;
+            }
+            Err(StoreError::DoesNotExist(_)) => {}
+            Err(e) => {
+                error!(
+                    message = "Failed to delete document data",
+                    event = "document_delete_failed",
+                    doc_id = %doc_id,
+                    error = %e
+                );
+                return Err(AppError(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    anyhow!("Failed to delete document data: {}", e),
+                ));
+            }
+        }
+
+        let assets_prefix = format!("{}/assets/", doc_id);
+        match store.list_objects(&assets_prefix).await {
+            Ok(asset_names) => {
+                for filename in asset_names {
+                    let key = format!("{}/assets/{}", doc_id, filename);
+                    match store.remove(&key).await {
+                        Ok(_) => {
+                            deleted_assets += 1;
+                        }
+                        Err(StoreError::DoesNotExist(_)) => {}
+                        Err(e) => {
+                            error!(
+                                message = "Failed to delete document asset",
+                                event = "document_delete_asset_failed",
+                                doc_id = %doc_id,
+                                asset = %filename,
+                                error = %e
+                            );
+                            return Err(AppError(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                anyhow!("Failed to delete asset {}: {}", filename, e),
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(StoreError::DoesNotExist(_)) => {}
+            Err(e) => {
+                error!(
+                    message = "Failed to list document assets",
+                    event = "document_delete_failed",
+                    doc_id = %doc_id,
+                    error = %e
+                );
+                return Err(AppError(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    anyhow!("Failed to list assets for deletion: {}", e),
+                ));
+            }
+        }
+    }
+
+    let success = existed_in_memory || data_deleted || deleted_assets > 0;
+
+    info!(
+        message = "Document deleted",
+        event = "document_delete_completed",
+        doc_id = %doc_id,
+        data_deleted = data_deleted,
+        deleted_assets = deleted_assets,
+        existed_in_memory = existed_in_memory
+    );
+
+    Ok(Json(DocDeleteResponse {
+        doc_id,
+        success,
+        data_deleted,
+        deleted_assets,
+    }))
+}
+
 async fn copy_document(
     Path(source_doc_id): Path<String>,
     State(server_state): State<Arc<Server>>,
@@ -1375,7 +1499,100 @@ async fn copy_document(
 #[cfg(test)]
 mod test {
     use super::*;
+    use async_trait::async_trait;
+    use dashmap::DashMap;
+    use std::sync::Arc;
     use y_sweet_core::api_types::Authorization;
+    use y_sweet_core::store::{Result, Store};
+    use yrs_kvstore::KVStore;
+
+    #[derive(Default, Clone)]
+    struct TestStore {
+        data: Arc<DashMap<String, Vec<u8>>>,
+    }
+
+    impl TestStore {
+        fn insert(&self, key: &str, value: Vec<u8>) {
+            self.data.insert(key.to_owned(), value);
+        }
+    }
+
+    #[async_trait]
+    impl Store for TestStore {
+        async fn init(&self) -> Result<()> {
+            Ok(())
+        }
+
+        async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self.data.get(key).map(|v| v.clone()))
+        }
+
+        async fn set(&self, key: &str, value: Vec<u8>) -> Result<()> {
+            self.data.insert(key.to_owned(), value);
+            Ok(())
+        }
+
+        async fn remove(&self, key: &str) -> Result<()> {
+            self.data.remove(key);
+            Ok(())
+        }
+
+        async fn exists(&self, key: &str) -> Result<bool> {
+            Ok(self.data.contains_key(key))
+        }
+
+        async fn generate_upload_presigned_url(
+            &self,
+            key: &str,
+            _content_type: &str,
+        ) -> Result<String> {
+            Ok(format!("test://localhost/{}", key))
+        }
+
+        async fn generate_download_presigned_url(&self, key: &str) -> Result<String> {
+            Ok(format!("test://localhost/{}", key))
+        }
+
+        async fn list_objects(&self, prefix: &str) -> Result<Vec<String>> {
+            let mut objects = Vec::new();
+            for entry in self.data.iter() {
+                let key = entry.key();
+                if key.starts_with(prefix) {
+                    let relative_key = &key[prefix.len()..];
+                    if !relative_key.is_empty() {
+                        objects.push(relative_key.to_string());
+                    }
+                }
+            }
+            Ok(objects)
+        }
+
+        async fn copy_document(&self, source_doc_id: &str, destination_doc_id: &str) -> Result<()> {
+            let source_prefix = format!("{}/", source_doc_id);
+            let destination_prefix = format!("{}/", destination_doc_id);
+
+            let keys_to_copy: Vec<(String, Vec<u8>)> = self
+                .data
+                .iter()
+                .filter_map(|entry| {
+                    let key = entry.key();
+                    if key.starts_with(&source_prefix) {
+                        let relative_path = &key[source_prefix.len()..];
+                        let destination_key = format!("{}{}", destination_prefix, relative_path);
+                        Some((destination_key, entry.value().clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for (key, value) in keys_to_copy {
+                self.data.insert(key, value);
+            }
+
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn test_auth_doc() {
@@ -1416,93 +1633,6 @@ mod test {
 
     #[tokio::test]
     async fn test_copy_document_with_sync() {
-        use async_trait::async_trait;
-        use dashmap::DashMap;
-        use std::sync::Arc;
-        use y_sweet_core::store::Result;
-        use yrs_kvstore::KVStore;
-
-        #[derive(Default, Clone)]
-        struct TestStore {
-            data: Arc<DashMap<String, Vec<u8>>>,
-        }
-
-        #[async_trait]
-        impl Store for TestStore {
-            async fn init(&self) -> Result<()> {
-                Ok(())
-            }
-
-            async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-                Ok(self.data.get(key).map(|v| v.clone()))
-            }
-
-            async fn set(&self, key: &str, value: Vec<u8>) -> Result<()> {
-                self.data.insert(key.to_owned(), value);
-                Ok(())
-            }
-
-            async fn remove(&self, key: &str) -> Result<()> {
-                self.data.remove(key);
-                Ok(())
-            }
-
-            async fn exists(&self, key: &str) -> Result<bool> {
-                Ok(self.data.contains_key(key))
-            }
-
-            async fn generate_upload_presigned_url(&self, key: &str) -> Result<String> {
-                Ok(format!("test://localhost/{}", key))
-            }
-
-            async fn generate_download_presigned_url(&self, key: &str) -> Result<String> {
-                Ok(format!("test://localhost/{}", key))
-            }
-
-            async fn list_objects(&self, prefix: &str) -> Result<Vec<String>> {
-                let mut objects = Vec::new();
-                for entry in self.data.iter() {
-                    let key = entry.key();
-                    if key.starts_with(prefix) {
-                        let relative_key = &key[prefix.len()..];
-                        objects.push(relative_key.to_string());
-                    }
-                }
-                Ok(objects)
-            }
-
-            async fn copy_document(
-                &self,
-                source_doc_id: &str,
-                destination_doc_id: &str,
-            ) -> Result<()> {
-                let source_prefix = format!("{}/", source_doc_id);
-                let destination_prefix = format!("{}/", destination_doc_id);
-
-                let keys_to_copy: Vec<(String, Vec<u8>)> = self
-                    .data
-                    .iter()
-                    .filter_map(|entry| {
-                        let key = entry.key();
-                        if key.starts_with(&source_prefix) {
-                            let relative_path = &key[source_prefix.len()..];
-                            let destination_key =
-                                format!("{}{}", destination_prefix, relative_path);
-                            Some((destination_key, entry.value().clone()))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                for (key, value) in keys_to_copy {
-                    self.data.insert(key, value);
-                }
-
-                Ok(())
-            }
-        }
-
         let store = TestStore::default();
         let server_state = Server::new(
             Some(Box::new(store.clone())),
@@ -1540,6 +1670,53 @@ mod test {
         assert_eq!(response.source_doc_id, source_doc_id);
         assert_eq!(response.destination_doc_id, destination_doc_id);
         assert!(response.success);
+    }
+
+    #[tokio::test]
+    async fn test_delete_document_removes_data_and_assets() {
+        let store = TestStore::default();
+        let server_state = Arc::new(
+            Server::new(
+                Some(Box::new(store.clone())),
+                Duration::from_secs(60),
+                None,
+                None,
+                CancellationToken::new(),
+                true,
+            )
+            .await
+            .unwrap(),
+        );
+
+        let doc_id = server_state.create_doc().await.unwrap();
+
+        if let Some(doc) = server_state.docs.get(&doc_id) {
+            doc.sync_kv().persist().await.unwrap();
+        }
+
+        store.insert(&format!("{}/assets/foo.png", doc_id), b"asset-1".to_vec());
+        store.insert(&format!("{}/assets/bar.jpg", doc_id), b"asset-2".to_vec());
+
+        let response = delete_document(Path(doc_id.clone()), State(server_state.clone()), None)
+            .await
+            .unwrap();
+
+        assert!(response.success);
+        assert!(response.data_deleted);
+        assert_eq!(response.deleted_assets, 2);
+
+        assert!(!store
+            .exists(&format!("{}/data.ysweet", doc_id))
+            .await
+            .unwrap());
+
+        assert!(store
+            .list_objects(&format!("{}/assets/", doc_id))
+            .await
+            .unwrap()
+            .is_empty());
+
+        assert!(server_state.docs.get(&doc_id).is_none());
     }
 
     #[tokio::test]
