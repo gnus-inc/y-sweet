@@ -6,7 +6,7 @@ use axum::{
         Path, Query, Request, State, WebSocketUpgrade,
     },
     http::{
-        header::{HeaderMap, HeaderName},
+        header::{HeaderMap, HeaderName, HeaderValue},
         StatusCode,
     },
     middleware::{self, Next},
@@ -1197,7 +1197,7 @@ async fn get_doc_assets(
     Path(doc_id): Path<String>,
     State(server_state): State<Arc<Server>>,
     auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
-) -> Result<Json<AssetsResponse>, AppError> {
+) -> Result<impl IntoResponse, AppError> {
     let token = get_token_from_header(auth_header);
     let _ = server_state.verify_doc_token(token.as_deref(), &doc_id)?;
 
@@ -1250,13 +1250,18 @@ async fn get_doc_assets(
         Vec::new()
     };
 
-    Ok(Json(AssetsResponse { assets }))
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=30"),
+    );
+    Ok((headers, Json(AssetsResponse { assets })))
 }
 
 async fn get_doc_assets_single(
     State(server_state): State<Arc<Server>>,
     headers: HeaderMap,
-) -> Result<Json<AssetsResponse>, AppError> {
+) -> Result<impl IntoResponse, AppError> {
     let doc_id = server_state.get_single_doc_id()?;
     let _authorization = get_authorization_from_plane_header(headers)?;
 
@@ -1292,7 +1297,12 @@ async fn get_doc_assets_single(
             }
         }
 
-        Ok(Json(AssetsResponse { assets }))
+        let mut resp_headers = HeaderMap::new();
+        resp_headers.insert(
+            axum::http::header::CACHE_CONTROL,
+            HeaderValue::from_static("private, max-age=30"),
+        );
+        Ok((resp_headers, Json(AssetsResponse { assets })))
     } else {
         Err(AppError(
             StatusCode::INTERNAL_SERVER_ERROR,
