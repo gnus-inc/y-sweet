@@ -3,6 +3,7 @@
 pub mod cli;
 pub mod convert;
 pub mod server;
+pub mod server_ext;
 pub mod stores;
 
 #[cfg(test)]
