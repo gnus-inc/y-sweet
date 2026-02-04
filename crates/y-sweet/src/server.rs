@@ -3,7 +3,7 @@ use axum::{
     body::Bytes,
     extract::{
         ws::{Message, WebSocket},
-        Path, Query, Request, State, WebSocketUpgrade,
+        DefaultBodyLimit, Path, Query, Request, State, WebSocketUpgrade,
     },
     http::{
         header::{HeaderMap, HeaderName},
@@ -46,6 +46,12 @@ use y_sweet_core::{
 };
 
 const PLANE_VERIFIED_USER_DATA_HEADER: &str = "x-verified-user-data";
+
+// Every 20 seconds, we send a ping to the client.
+const PING_EVERY: Duration = Duration::from_secs(20);
+// If we haven't received a pong in the last 40 seconds, we close the connection.
+// All modern browsers will respond to websocket pings with a pong message.
+const PONG_TIMEOUT: Duration = Duration::from_secs(40);
 
 fn current_time_epoch_millis() -> u64 {
     let now = std::time::SystemTime::now();
@@ -99,6 +105,9 @@ pub struct Server {
     /// Whether to garbage collect docs that are no longer in use.
     /// Disabled for single-doc mode, since we only have one doc.
     doc_gc: bool,
+    max_body_size: Option<usize>,
+    /// Whether to skip garbage collection in Yrs documents.
+    skip_gc: bool,
 }
 
 impl Server {
@@ -109,6 +118,8 @@ impl Server {
         url_prefix: Option<Url>,
         cancellation_token: CancellationToken,
         doc_gc: bool,
+        max_body_size: Option<usize>,
+        skip_gc: bool,
     ) -> Result<Self> {
         Ok(Self {
             docs: Arc::new(DashMap::new()),
@@ -119,6 +130,8 @@ impl Server {
             url_prefix,
             cancellation_token,
             doc_gc,
+            max_body_size,
+            skip_gc,
         })
     }
 
@@ -155,9 +168,14 @@ impl Server {
     pub async fn load_doc(&self, doc_id: &str) -> Result<()> {
         let (send, recv) = channel(1024);
 
-        let dwskv = DocWithSyncKv::new(doc_id, self.store.clone(), move || {
-            send.try_send(()).unwrap();
-        })
+        let dwskv = DocWithSyncKv::new(
+            doc_id,
+            self.store.clone(),
+            move || {
+                send.try_send(()).unwrap();
+            },
+            self.skip_gc,
+        )
         .await?;
 
         dwskv
@@ -556,10 +574,16 @@ impl Server {
     ) -> Result<()> {
         let token = self.cancellation_token.clone();
 
-        let app = if redact_errors {
-            routes
+        let mut app = if let Some(max_body_size) = self.max_body_size {
+            routes.layer(DefaultBodyLimit::max(max_body_size))
         } else {
-            routes.layer(middleware::from_fn(Self::redact_error_middleware))
+            routes
+        };
+
+        app = if redact_errors {
+            app
+        } else {
+            app.layer(middleware::from_fn(Self::redact_error_middleware))
         };
 
         axum::serve(listener, app.into_make_service())
@@ -803,16 +827,36 @@ async fn handle_socket(
         }
     );
 
+    let last_pong = Arc::new(RwLock::new(tokio::time::Instant::now()));
+    let last_pong_clone = last_pong.clone();
+
     tokio::spawn(async move {
-        while let Some(msg) = recv.recv().await {
-            if let Err(e) = sink.send(Message::Binary(msg)).await {
-                let error_message = format!("WebSocket send error: {}", e);
-                error!(
-                    message = %error_message,
-                    event = "websocket_send_error",
-                    error = %e
-                );
-                break;
+        let mut ticker = tokio::time::interval(PING_EVERY);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                msg = recv.recv() => {
+                    let Some(msg) = msg else {
+                        break;
+                    };
+                    if let Err(e) = sink.send(Message::Binary(msg)).await {
+                        let error_message = format!("WebSocket send error: {}", e);
+                        error!(
+                            message = %error_message,
+                            event = "websocket_send_error",
+                            error = %e
+                        );
+                        break;
+                    }
+                }
+                _ = ticker.tick() => {
+                    if last_pong_clone.read().expect("Failed to get read lock on last_pong").elapsed() > PONG_TIMEOUT {
+                        tracing::info!("Pong timeout, closing connection");
+                        break;
+                    }
+                    let _ = sink.send(Message::Ping(vec![])).await;
+                }
             }
         }
     });
@@ -831,7 +875,10 @@ async fn handle_socket(
     let mut message_count = 0u64;
     loop {
         tokio::select! {
-            Some(msg) = stream.next() => {
+            msg = stream.next() => {
+                let Some(msg) = msg else {
+                    break;
+                };
                 let msg = match msg {
                     Ok(Message::Binary(bytes)) => {
                         message_count += 1;
@@ -845,6 +892,10 @@ async fn handle_socket(
                             reason = "client_close"
                         );
                         break;
+                    }
+                    Ok(Message::Pong(_)) => {
+                        *last_pong.write().expect("Failed to get write lock on last_pong") = tokio::time::Instant::now();
+                        continue;
                     }
                     Err(e) => {
                         // The stream will complain about things like
@@ -1164,6 +1215,8 @@ mod test {
             None,
             CancellationToken::new(),
             true,
+            None,
+            false,
         )
         .await
         .unwrap();
@@ -1202,6 +1255,8 @@ mod test {
             None,
             CancellationToken::new(),
             true,
+            None,
+            false,
         )
         .await
         .unwrap();
@@ -1244,6 +1299,8 @@ mod test {
                 None,
                 CancellationToken::new(),
                 true,
+                None,
+                false,
             )
             .await
             .unwrap(),
@@ -1290,6 +1347,8 @@ mod test {
             Some(prefix),
             CancellationToken::new(),
             true,
+            None,
+            false,
         )
         .await
         .unwrap();
