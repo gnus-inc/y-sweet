@@ -34,8 +34,8 @@ use tracing::{error, info, span, warn, Level};
 use url::Url;
 use y_sweet_core::{
     api_types::{
-        validate_doc_name, AuthDocRequest, Authorization, ClientToken,
-        DocCreationRequest, NewDocResponse,
+        validate_doc_name, AuthDocRequest, Authorization, ClientToken, DocCreationRequest,
+        NewDocResponse,
     },
     auth::{Authenticator, ExpirationTimeEpochMillis, DEFAULT_EXPIRATION_SECONDS},
     doc_connection::DocConnection,
@@ -608,7 +608,11 @@ impl Server {
         s.serve_internal(listener, redact_errors, routes).await
     }
 
-    pub fn verify_doc_token(&self, token: Option<&str>, doc: &str) -> Result<Authorization, AppError> {
+    pub fn verify_doc_token(
+        &self,
+        token: Option<&str>,
+        doc: &str,
+    ) -> Result<Authorization, AppError> {
         if let Some(authenticator) = &self.authenticator {
             if let Some(token) = token {
                 let authorization = authenticator
@@ -1104,7 +1108,6 @@ pub fn get_authorization_from_plane_header(headers: HeaderMap) -> Result<Authori
         Err((StatusCode::UNAUTHORIZED, anyhow!("No token provided.")))?
     }
 }
-
 
 #[cfg(test)]
 mod test {

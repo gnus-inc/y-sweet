@@ -1,5 +1,5 @@
+use super::{Result, Store};
 use async_trait::async_trait;
-use super::{Store, Result};
 
 /// GNUS独自のStore拡張機能
 ///
