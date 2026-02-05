@@ -1,10 +1,10 @@
 use super::{Result, Store};
 use async_trait::async_trait;
 
-/// GNUS独自のStore拡張機能
+/// Custom Store extension functionality
 ///
-/// S3やファイルシステムストアに対して、署名付きURLの生成、
-/// オブジェクトリスト取得、ドキュメントコピーなどの拡張機能を提供します。
+/// Provides extension features for S3 and filesystem stores such as
+/// presigned URL generation, object listing, and document copying.
 #[cfg(target_arch = "wasm32")]
 #[async_trait(?Send)]
 pub trait StoreExt: Store {
