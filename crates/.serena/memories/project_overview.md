@@ -1,5 +1,14 @@
 # Y-Sweet Project Overview
 
+## Fork Information
+This is a fork of [jamsocket/y-sweet](https://github.com/jamsocket/y-sweet) with custom extensions. The project maintains compatibility with upstream while adding:
+- Presigned URL generation for S3 assets
+- Document deletion and copying APIs
+- Datadog APM integration
+- Custom endpoint extensions under `/d/:doc_id` prefix
+
+**Version**: Based on upstream v0.9.1 with custom extensions
+
 ## Purpose
 Y-Sweet is an open-source server for building realtime applications on top of the Yjs CRDT library. It provides:
 - Document persistence to network filesystem or S3-compatible storage (inspired by Figma's infrastructure)
