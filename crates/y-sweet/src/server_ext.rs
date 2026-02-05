@@ -480,18 +480,18 @@ pub async fn copy_document(
     }
 }
 
-/// GNUS独自のルート定義
-pub fn gnus_routes(server: &Arc<Server>) -> Router {
+/// Extension routes for custom endpoints
+pub fn ext_routes(server: &Arc<Server>) -> Router {
     Router::new()
-        .route("/doc/:doc_id", delete(delete_document))
-        .route("/doc/:doc_id/copy", post(copy_document))
-        .route("/doc/:doc_id/assets", post(generate_upload_presigned_url))
-        .route("/doc/:doc_id/assets", get(get_doc_assets))
+        .route("/d/:doc_id", delete(delete_document))
+        .route("/d/:doc_id/copy", post(copy_document))
+        .route("/d/:doc_id/assets", post(generate_upload_presigned_url))
+        .route("/d/:doc_id/assets", get(get_doc_assets))
         .with_state(server.clone())
 }
 
-/// GNUS独自のルート定義（single doc mode）
-pub fn gnus_single_doc_routes(server: &Arc<Server>) -> Router {
+/// Extension routes for custom endpoints (single doc mode)
+pub fn ext_single_doc_routes(server: &Arc<Server>) -> Router {
     Router::new()
         .route("/assets", post(generate_upload_presigned_url_single))
         .route("/assets", get(get_doc_assets_single))

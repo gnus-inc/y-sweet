@@ -549,8 +549,8 @@ impl Server {
             .layer(OtelAxumLayer::default())
             .with_state(self.clone());
 
-        // Merge GNUS extension routes
-        base_routes.merge(crate::server_ext::gnus_routes(self))
+        // Merge extension routes
+        base_routes.merge(crate::server_ext::ext_routes(self))
     }
 
     pub fn single_doc_routes(self: &Arc<Self>) -> Router {
@@ -562,8 +562,8 @@ impl Server {
             .layer(OtelAxumLayer::default())
             .with_state(self.clone());
 
-        // Merge GNUS extension routes
-        base_routes.merge(crate::server_ext::gnus_single_doc_routes(self))
+        // Merge extension routes
+        base_routes.merge(crate::server_ext::ext_single_doc_routes(self))
     }
 
     async fn serve_internal(
