@@ -2,10 +2,19 @@
 
 When completing a coding task in the Y-Sweet project, follow these steps:
 
-## 1. Code Quality Checks
+## 1. Mandatory Verification (MUST RUN after ANY code change)
+```bash
+cargo build --all                    # Build all packages
+cargo test --all                     # Run all tests
+cargo fmt -- --check                 # Verify formatting (or run `cargo fmt` to fix)
+```
+
+**All three MUST pass** before considering work complete. This is non-negotiable.
+
+## 2. Code Quality Checks
 ```bash
 cargo fmt                            # Format code
-cargo clippy --all-targets --all-features  # Run linter
+cargo clippy --all-targets --all-features  # Run linter (optional but recommended)
 ```
 
 ## 2. Testing
