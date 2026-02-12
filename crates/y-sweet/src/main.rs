@@ -165,11 +165,11 @@ async fn main() -> Result<()> {
     let opts = Opts::parse();
 
     // Logging: default WARN, override via Y_SWEET_LOG (e.g. "info", "debug", "trace" or full filter spec)
-    // Example: Y_SWEET_LOG=y_sweet=info,y_sweet_core=info,hyper=warn
+    // Example: Y_SWEET_LOG=y_sweet=debug,y_sweet_core=info,hyper=warn
     let filter = if let Ok(spec) = std::env::var("Y_SWEET_LOG") {
         EnvFilter::new(spec)
     } else {
-        EnvFilter::new("info")
+        EnvFilter::new("warn")
     };
     let _ddtrace_guard = init_tracing(filter)?;
 
